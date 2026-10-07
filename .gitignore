@@ -1,0 +1,23 @@
+# 数据库
+chat.db
+chat.db-wal
+chat.db-shm
+
+# Node 依赖
+node_modules/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

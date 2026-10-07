@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<!-- 声明这是 HTML5 文档 -->
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>聊天室</title>
+    <!-- 引入外部 CSS 文件 -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 左侧栏：房间信息、状态、离开按钮 -->
+    <div id="sidebar">
+        <!-- 设定加入房间 -->
+        <div id="joinBox">
+            <input id="nicknameInput" placeholder="输入昵称" />
+            <input id="roomInput" placeholder="请输入房间名" />
+            <button id="joinBtn">加入房间</button>
+        </div>
+
+        <!-- 已加入的房间列表 -->
+        <div id="roomList"></div>
+
+        <p id="status">未加入房间</p>
+
+        <!-- h3 用来显示房间标题 -->
+        <h3 id="roomTitle"></h3>
+
+        <button id="leaveBtn" style="display:none">离开房间</button>
+    </div>
+
+    <!-- 右侧聊天区 -->
+    <div id="chatArea">
+        <!-- ul 是消息列表 -->
+        <ul id="messages"></ul>
+
+        <!-- 底部输入区 -->
+        <div id="inputArea">
+            <!-- input 是输入框 -->
+            <input id="input" placeholder="输入消息，回车发送" />
+        </div>
+    </div>
+
+    <script>
+        // 找到消息列表 ul
+        const list = document.getElementById('messages');
+
+        // 找到输入框
+        const input = document.getElementById('input');
+
+        // 找昵称
+        const nicknameInput = document.getElementById('nicknameInput');
+
+        // 找到房间相关元素
+        const roomInput = document.getElementById('roomInput');
+        const joinBtn = document.getElementById('joinBtn');
+        const joinBox = document.getElementById('joinBox');
+
+        const leaveBtn = document.getElementById('leaveBtn');
+        const roomTitle = document.getElementById('roomTitle');
+        const status = document.getElementById('status');
+
+        // 房间列表容器
+        const roomListEl = document.getElementById('roomList');
+
+        // 昵称：全局只设一次
+        let nickname = null;
+
+        // 当前显示的房间名
+        let currentRoom = null;
+
+        // 房间名 -> 房间状态
+        // 每个房间状态：{ ws, lastId, messages, connected, unread }
+        const roomMap = new Map();
+
+        function setStatus(text) {
+            status.textContent = text;
+        }
+
+        // 加入房间：创建新连接，不关旧连接
+        function joinRoom() {
+            // 昵称只读一次
+            if (nickname === null) {
+                const nick = nicknameInput.value.trim();
+                if (nick === '') {
+                    alert('请输入昵称');
+                    return;
+                }
+                nickname = nick;
+                nicknameInput.style.display = 'none';
+            }
+
+            const roomName = roomInput.value.trim();
+            if (roomName === '') {
+                alert('请输入房间名');
+                return;
+            }
+
+            const pattern = /^[a-zA-Z0-9_\-\u4e00-\u9fa5]{1,20}$/;
+            if (!pattern.test(roomName)) {
+                alert('房间名只能包含字母、数字、下划线、短横线、中文，长度 1~20');
+                return;
+            }
+            if (!pattern.test(nickname)) {
+                alert('昵称只能包含字母、数字、下划线、短横线、中文，长度 1~20');
+                return;
+            }
+
+            // 已经加入过这个房间
+            if (roomMap.has(roomName)) {
+                alert('已经在房间：' + roomName);
+                switchRoom(roomName);
+                return;
+            }
+
+            // 创建这个房间的状态
+            const state = {
+                ws: null,
+                lastId: 0,
+                messages: [],
+                connected: false,
+                unread: 0
+            };
+            roomMap.set(roomName, state);
+
+            // 建立这个房间的连接
+            const ws = new WebSocket(
+                `ws://localhost:3000?room=${roomName}&lastId=0&nickname=${encodeURIComponent(nickname)}`
+            );
+            state.ws = ws;
+
+            ws.onopen = () => {
+                state.connected = true;
+                setStatus('已连接');
+                renderRoomList();
+            };
+
+            ws.onmessage = (e) => {
+                let msg;
+                try {
+                    msg = JSON.parse(e.data);
+                } catch {
+                    console.error('非法 JSON', e.data);
+                    return;
+                }
+                state.lastId = msg.id;
+                state.messages.push(msg);
+
+                // 如果当前正在看这个房间，就渲染
+                if (currentRoom === roomName) {
+                    renderMessages();
+                } else {
+                    // 否则标记未读
+                    state.unread++;
+                    renderRoomList();
+                }
+            };
+
+            ws.onerror = () => setStatus('连接出错');
+
+            ws.onclose = () => {
+                state.connected = false;
+                setStatus('连接断了，3 秒后重连...');
+                renderRoomList();
+                // 自动重连
+                setTimeout(() => reconnect(roomName), 3000);
+            };
+
+            // 清空输入框
+            roomInput.value = '';
+
+            // 切换到新加入的房间
+            switchRoom(roomName);
+        }
+
+        // 重连某个房间
+        function reconnect(roomName) {
+            const state = roomMap.get(roomName);
+            if (!state) return;
+            if (state.connected) return;
+
+            const ws = new WebSocket(
+                `ws://localhost:3000?room=${roomName}&lastId=${state.lastId}&nickname=${encodeURIComponent(nickname)}`
+            );
+            state.ws = ws;
+
+            ws.onopen = () => {
+                state.connected = true;
+                setStatus('已连接');
+                renderRoomList();
+            };
+
+            ws.onmessage = (e) => {
+                let msg;
+                try {
+                    msg = JSON.parse(e.data);
+                } catch {
+                    return;
+                }
+                state.lastId = msg.id;
+                state.messages.push(msg);
+
+                if (currentRoom === roomName) {
+                    renderMessages();
+                } else {
+                    state.unread++;
+                    renderRoomList();
+                }
+            };
+
+            ws.onclose = (e) => {
+            if (e.code === 1001) {
+                // 服务器主动关闭，不重连
+                setStatus('服务器已关闭');
+                return;
+            }
+            // 其他情况，重连
+            console.log('连接断了，3 秒后重连...');
+            setTimeout(connect, 3000);
+            };
+        }
+
+        // 切换当前显示的房间
+        function switchRoom(roomName) {
+            currentRoom = roomName;
+
+            const state = roomMap.get(roomName);
+            if (state) {
+                state.unread = 0;
+            }
+
+            roomTitle.textContent = '房间：' + roomName;
+            leaveBtn.style.display = 'inline';
+
+            renderRoomList();
+            renderMessages();
+        }
+
+        // 渲染消息列表
+        function renderMessages() {
+            list.innerHTML = '';
+
+            const state = roomMap.get(currentRoom);
+            if (!state) return;
+
+            for (const msg of state.messages) {
+                const li = document.createElement('li');
+                const isSelf = msg.nickname === nickname;
+                li.className = isSelf ? 'self' : 'other';
+
+                const bubble = document.createElement('div');
+                bubble.className = 'bubble';
+                bubble.textContent = `${msg.nickname}：${msg.content}`;
+                li.appendChild(bubble);
+                list.appendChild(li);
+            }
+
+            list.scrollTop = list.scrollHeight;
+        }
+
+        // 渲染左侧房间列表
+        function renderRoomList() {
+            roomListEl.innerHTML = '';
+
+            for (const [roomName, state] of roomMap) {
+                const item = document.createElement('div');
+                item.className = 'room-item';
+                if (roomName === currentRoom) {
+                    item.classList.add('active');
+                }
+
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = roomName;
+                item.appendChild(nameSpan);
+
+                if (state.unread > 0) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge';
+                    badge.textContent = state.unread;
+                    item.appendChild(badge);
+                }
+
+                item.addEventListener('click', () => switchRoom(roomName));
+                roomListEl.appendChild(item);
+            }
+        }
+
+        // 离开当前房间
+        function leaveRoom() {
+            if (!currentRoom) return;
+
+            const state = roomMap.get(currentRoom);
+            if (state && state.ws) {
+                state.ws.onclose = null;  // 阻止重连
+                state.ws.close();
+            }
+            roomMap.delete(currentRoom);
+
+            // 切换到下一个房间
+            const next = roomMap.keys().next().value;
+            if (next) {
+                switchRoom(next);
+            } else {
+                currentRoom = null;
+                list.innerHTML = '';
+                roomTitle.textContent = '';
+                leaveBtn.style.display = 'none';
+                setStatus('未加入房间');
+                renderRoomList();
+            }
+        }
+
+        // 点击按钮加入房间
+        joinBtn.addEventListener('click', joinRoom);
+
+        // 离开房间
+        leaveBtn.addEventListener('click', leaveRoom);
+
+        // 回车也能加入房间
+        roomInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                joinRoom();
+            }
+        });
+
+        nicknameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') joinRoom();
+        });
+
+        // 给输入框加键盘事件
+        input.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            if (input.value.trim() === '') return;
+
+            const state = roomMap.get(currentRoom);
+            if (!state || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
+                alert('当前房间未连接');
+                return;
+            }
+
+            state.ws.send(JSON.stringify({ content: input.value }));
+            input.value = '';
+        });
+    </script>
+</body>
+</html>
