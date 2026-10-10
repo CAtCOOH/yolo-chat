@@ -1,0 +1,7 @@
+datasets/
+runs/
+weights/
+*.pt
+*.cache
+__pycache__/
+*.pyc
