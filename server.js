@@ -1,6 +1,11 @@
 const WebSocket = require('ws');
 const Database = require('better-sqlite3');
 
+// ============ Dify 配置 ============
+
+const DIFY_API_KEY = 'app-7SBxaviWWUGcz0Ua8jPzf1fY';;
+const DIFY_API_URL = 'http://localhost/v1/chat-messages';
+
 // ============ 配置 ============
 
 // 房间名和昵称允许的字符：字母、数字、下划线、短横线、中文，长度 1~20
@@ -76,6 +81,51 @@ const stmtHistoryRecent = db.prepare(
 const stmtHistoryAfter = db.prepare(
   'SELECT * FROM messages WHERE room = ? AND id > ? ORDER BY id ASC'
 );
+
+// ============ Dify 调用 ============
+
+async function callDify(room, userMessage) {
+  try {
+    const resp = await fetch(DIFY_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${DIFY_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        inputs: {},
+        query: userMessage,
+        response_mode: 'blocking',
+        user: 'chatroom-' + room
+      })
+    });
+
+    if (!resp.ok) {
+      console.error('Dify 返回错误状态：', resp.status);
+      return;
+    }
+
+    const data = await resp.json();
+    const answer = data.answer || '（AI 没有返回内容）';
+
+    // 存进数据库
+    const info = stmtInsert.run(room, 'AI', answer);
+    const aiRow = stmtSelectById.get(info.lastInsertRowid);
+
+    // 广播给同房间
+    const clients = rooms.get(room);
+    if (clients) {
+      const payload = JSON.stringify(aiRow);
+      clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(payload);
+        }
+      });
+    }
+  } catch (err) {
+    console.error('调用 Dify 失败：', err.message);
+  }
+}
 
 // ============ WebSocket 服务器 ============
 
@@ -230,6 +280,9 @@ wss.on('connection', (ws, req) => {
         }
       });
     }
+
+    // 异步调用 AI，不阻塞广播
+    callDify(room, content);
   });
 
   // ========== 关闭时清理 ==========
