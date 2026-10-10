@@ -25,6 +25,9 @@
         <!-- h3 用来显示房间标题 -->
         <h3 id="roomTitle"></h3>
 
+        <!-- YOLO 检测服务状态：模型加载中 / 已就绪 / 不可用 -->
+        <p id="yoloStatus"></p>
+
         <button id="leaveBtn" style="display:none">离开房间</button>
     </div>
 
@@ -33,14 +36,38 @@
         <!-- ul 是消息列表 -->
         <ul id="messages"></ul>
 
+        <!-- 待发送图片的预览条（选了图片才显示） -->
+        <div id="previewBar" style="display:none">
+            <img id="previewImg" alt="待发送图片预览" />
+            <div id="previewInfo">
+                <span id="previewName"></span>
+                <span id="previewMeta"></span>
+            </div>
+            <button id="previewCancel" title="取消发送">✕</button>
+        </div>
+
         <!-- 底部输入区 -->
         <div id="inputArea">
+            <!-- 选择图片的按钮，点击后触发隐藏的 file input -->
+            <button id="imageBtn" title="发送图片（自动进行 YOLO 检测）">🖼</button>
+
+            <!-- 真正接收文件的 input；accept 只过滤选择时的默认视图，不等于安全校验 -->
+            <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp" style="display:none" />
+
             <!-- input 是输入框 -->
             <input id="input" placeholder="输入消息，回车发送" />
         </div>
     </div>
 
     <script>
+        // ============ 服务地址 ============
+        // 后端（WebSocket + 图片上传 + 图片访问）统一在 3000 端口。
+        // 单独抽出来是为了以后换端口、换机器只改这一个地方。
+        const SERVER_HOST = 'localhost:3000';
+        const SERVER_ORIGIN = 'http://' + SERVER_HOST;
+
+        // ============ DOM 引用 ============
+
         // 找到消息列表 ul
         const list = document.getElementById('messages');
 
@@ -53,14 +80,33 @@
         // 找到房间相关元素
         const roomInput = document.getElementById('roomInput');
         const joinBtn = document.getElementById('joinBtn');
-        const joinBox = document.getElementById('joinBox');
 
         const leaveBtn = document.getElementById('leaveBtn');
         const roomTitle = document.getElementById('roomTitle');
         const status = document.getElementById('status');
+        const yoloStatusEl = document.getElementById('yoloStatus');
 
         // 房间列表容器
         const roomListEl = document.getElementById('roomList');
+
+        // 图片相关元素
+        const imageBtn = document.getElementById('imageBtn');
+        const imageInput = document.getElementById('imageInput');
+        const previewBar = document.getElementById('previewBar');
+        const previewImg = document.getElementById('previewImg');
+        const previewName = document.getElementById('previewName');
+        const previewMeta = document.getElementById('previewMeta');
+        const previewCancel = document.getElementById('previewCancel');
+
+        // ============ 前端配置 ============
+
+        // 和后端保持一致：单张图片最大 10MB（前端先拦一道，省一次无用的上传）
+        const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+        // 图片访问地址前缀
+        const UPLOAD_URL_PREFIX = SERVER_ORIGIN + '/uploads/';
+
+        // ============ 全局状态 ============
 
         // 昵称：全局只设一次
         let nickname = null;
@@ -69,12 +115,123 @@
         let currentRoom = null;
 
         // 房间名 -> 房间状态
-        // 每个房间状态：{ ws, lastId, messages, connected, unread }
+        // 每个房间状态：{ ws, lastId, messages, connected, unread, retryTimer }
         const roomMap = new Map();
+
+        // 选好但还没发出去的图片（File 对象）
+        let pendingImage = null;
+
+        // 临时消息 id -> 消息对象
+        // 图片先以 temp id 显示在界面上（这样用户立刻看到进度条），
+        // 等后端通过 WebSocket 把正式消息推回来时，再按 tempId 把临时消息替换掉。
+        const tempMessages = new Map();
+
+        // 上传队列：断线时先攒着，连上以后自动补发，避免用户白选一次图
+        const uploadQueue = [];
+
+        // 上传进行中的标志，保证同时只上传一张
+        let uploading = false;
+
+        // ============ 小工具 ============
 
         function setStatus(text) {
             status.textContent = text;
         }
+
+        /** 把字节数变成人看得懂的大小 */
+        function formatBytes(bytes) {
+            if (!bytes && bytes !== 0) return '';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+        }
+
+        /**
+         * HTML 转义。
+         * 消息内容里可能带 < > & 等字符（比如 AI 回复、别人的昵称），
+         * 历史版本用的是 textContent，天生安全；
+         * 现在要拼高亮标签，所以必须自己转义，否则就是 XSS 漏洞。
+         */
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        /** 图片消息和 YOLO 消息的 content 是 JSON，解析失败要能兜住 */
+        function parseContent(msg) {
+            try {
+                const parsed = JSON.parse(msg.content);
+                return (parsed && typeof parsed === 'object') ? parsed : null;
+            } catch {
+                return null;
+            }
+        }
+
+        /** 拼出图片的完整访问地址 */
+        function imageUrl(relativeOrName, folder) {
+            if (!relativeOrName) return '';
+            if (relativeOrName.startsWith('http')) return relativeOrName;
+            if (relativeOrName.startsWith('/uploads/')) return SERVER_ORIGIN + relativeOrName;
+            return UPLOAD_URL_PREFIX + folder + '/' + relativeOrName;
+        }
+
+        /** 取某个房间当前的状态对象 */
+        function stateOf(roomName) {
+            return roomMap.get(roomName);
+        }
+
+        // ============ 收到一条消息（各房间共用） ============
+
+        /**
+         * 处理一条从服务器来的消息。
+         * 原来 joinRoom 和 reconnect 里各写了一份完全一样的逻辑，
+         * 这里合并成一个函数，改协议时只用改一处。
+         */
+        function handleIncoming(roomName, msg) {
+            const state = stateOf(roomName);
+            if (!state) return;
+
+            // 只有带数字 id 的消息才参与 lastId 的推进，
+            // 否则临时消息（temp-xxx）会把 lastId 写坏，导致断线重连拉不到消息
+            if (typeof msg.id === 'number' && msg.id > state.lastId) {
+                state.lastId = msg.id;
+            }
+
+            // 如果是「上传成功」的正式消息，把对应的临时消息删掉，避免重复显示。
+            // 顺手把临时消息用的 blob URL 释放掉，否则每发一张图就泄漏一份内存。
+            if (msg.tempId && tempMessages.has(msg.tempId)) {
+                const temp = tempMessages.get(msg.tempId);
+                releaseTempUrl(temp);
+
+                const index = state.messages.indexOf(temp);
+                if (index >= 0) state.messages.splice(index, 1);
+                tempMessages.delete(msg.tempId);
+            }
+
+            state.messages.push(msg);
+
+            // 如果当前正在看这个房间，就渲染；否则只记未读数
+            if (currentRoom === roomName) {
+                renderMessages();
+            } else {
+                state.unread++;
+                renderRoomList();
+            }
+        }
+
+        /** 释放临时图片消息占用的 blob URL */
+        function releaseTempUrl(temp) {
+            const meta = parseContent(temp);
+            if (meta && meta.local && meta.url && meta.url.startsWith('blob:')) {
+                URL.revokeObjectURL(meta.url);
+            }
+        }
+
+        // ============ 加入房间 ============
 
         // 加入房间：创建新连接，不关旧连接
         function joinRoom() {
@@ -118,20 +275,50 @@
                 lastId: 0,
                 messages: [],
                 connected: false,
-                unread: 0
+                unread: 0,
+                retryTimer: null
             };
             roomMap.set(roomName, state);
 
             // 建立这个房间的连接
+            connectRoom(roomName, 0);
+
+            // 清空输入框
+            roomInput.value = '';
+
+            // 切换到新加入的房间
+            switchRoom(roomName);
+        }
+
+        /**
+         * 建立/重建某个房间的 WebSocket 连接。
+         * joinRoom 和 reconnect 的差别只是 lastId 不同，所以合并成一个函数，
+         * 避免两份几乎一样的代码各自演化出不一致的行为。
+         */
+        function connectRoom(roomName, lastId) {
+            const state = stateOf(roomName);
+            if (!state) return;
+
+            // 清掉可能存在的重连定时器，防止一次断开触发多次重连
+            if (state.retryTimer) {
+                clearTimeout(state.retryTimer);
+                state.retryTimer = null;
+            }
+
             const ws = new WebSocket(
-                `ws://localhost:3000?room=${roomName}&lastId=0&nickname=${encodeURIComponent(nickname)}`
+                `ws://${SERVER_HOST}?room=${encodeURIComponent(roomName)}&lastId=${lastId}&nickname=${encodeURIComponent(nickname)}`
             );
             state.ws = ws;
 
             ws.onopen = () => {
                 state.connected = true;
                 setStatus('已连接');
-                renderRoomList();
+
+                // 连上以后把断线期间攒下的图片补发出去
+                flushUploadQueue();
+
+                // 刷新 YOLO 服务状态
+                refreshYoloStatus();
             };
 
             ws.onmessage = (e) => {
@@ -142,82 +329,39 @@
                     console.error('非法 JSON', e.data);
                     return;
                 }
-                state.lastId = msg.id;
-                state.messages.push(msg);
-
-                // 如果当前正在看这个房间，就渲染
-                if (currentRoom === roomName) {
-                    renderMessages();
-                } else {
-                    // 否则标记未读
-                    state.unread++;
-                    renderRoomList();
-                }
+                handleIncoming(roomName, msg);
             };
 
             ws.onerror = () => setStatus('连接出错');
 
-            ws.onclose = () => {
+            ws.onclose = (e) => {
                 state.connected = false;
-                setStatus('连接断了，3 秒后重连...');
-                renderRoomList();
-                // 自动重连
-                setTimeout(() => reconnect(roomName), 3000);
-            };
 
-            // 清空输入框
-            roomInput.value = '';
-
-            // 切换到新加入的房间
-            switchRoom(roomName);
-        }
-
-        // 重连某个房间
-        function reconnect(roomName) {
-            const state = roomMap.get(roomName);
-            if (!state) return;
-            if (state.connected) return;
-
-            const ws = new WebSocket(
-                `ws://localhost:3000?room=${roomName}&lastId=${state.lastId}&nickname=${encodeURIComponent(nickname)}`
-            );
-            state.ws = ws;
-
-            ws.onopen = () => {
-                state.connected = true;
-                setStatus('已连接');
-                renderRoomList();
-            };
-
-            ws.onmessage = (e) => {
-                let msg;
-                try {
-                    msg = JSON.parse(e.data);
-                } catch {
+                // 服务器主动关闭（1001）：说明后端要关了，不该再重连
+                if (e && e.code === 1001) {
+                    setStatus('服务器已关闭');
                     return;
                 }
-                state.lastId = msg.id;
-                state.messages.push(msg);
 
-                if (currentRoom === roomName) {
-                    renderMessages();
-                } else {
-                    state.unread++;
-                    renderRoomList();
-                }
-            };
+                setStatus('连接断了，3 秒后重连...');
 
-            ws.onclose = (e) => {
-            if (e.code === 1001) {
-                // 服务器主动关闭，不重连
-                setStatus('服务器已关闭');
-                return;
-            }
-            // 其他情况，重连
-            console.log('连接断了，3 秒后重连...');
-            setTimeout(connect, 3000);
+                // 用 state.retryTimer 统一管理，重复触发也只会有一个定时器生效
+                state.retryTimer = setTimeout(() => {
+                    const latest = stateOf(roomName);
+                    if (!latest || latest.connected) return;
+                    connectRoom(roomName, latest.lastId);
+                }, 3000);
             };
         }
+
+        // 兼容旧名字：原来这个函数叫 reconnect
+        function reconnect(roomName) {
+            const state = stateOf(roomName);
+            if (!state || state.connected) return;
+            connectRoom(roomName, state.lastId);
+        }
+
+        // ============ 切换/渲染房间 ============
 
         // 切换当前显示的房间
         function switchRoom(roomName) {
@@ -235,25 +379,188 @@
             renderMessages();
         }
 
-        // 渲染消息列表
+        /** 渲染一条消息的 li 元素 */
+        function buildMessageElement(msg) {
+            const li = document.createElement('li');
+            const isSelf = msg.nickname === nickname;
+            li.className = isSelf ? 'self' : 'other';
+
+            // YOLO 机器人单独一个样式，方便一眼看出来是自动检测结果
+            if (msg.type === 'yolo') li.classList.add('yolo');
+
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'sender';
+            nameEl.textContent = msg.nickname;
+            bubble.appendChild(nameEl);
+
+            if (msg.type === 'image') {
+                appendImageContent(bubble, msg);
+            } else if (msg.type === 'yolo') {
+                appendYoloContent(bubble, msg);
+            } else {
+                // 纯文本：用 textContent，天然防注入
+                const textEl = document.createElement('div');
+                textEl.className = 'text';
+                textEl.textContent = msg.content;
+                bubble.appendChild(textEl);
+            }
+
+            li.appendChild(bubble);
+            return li;
+        }
+
+        /** 图片消息：显示图片 + 检测状态 */
+        function appendImageContent(bubble, msg) {
+            const meta = parseContent(msg);
+
+            if (!meta || !meta.url) {
+                const textEl = document.createElement('div');
+                textEl.className = 'text';
+                textEl.textContent = '（图片消息格式错误）';
+                bubble.appendChild(textEl);
+                return;
+            }
+
+            const img = document.createElement('img');
+            img.className = 'chat-image';
+            img.src = imageUrl(meta.url);
+            img.alt = '聊天图片';
+            img.loading = 'lazy';
+            // 图片加载失败时也要给个提示，不然就是一个破图图标
+            img.onerror = () => {
+                img.replaceWith(Object.assign(document.createElement('div'), {
+                    className: 'text image-error',
+                    textContent: '图片加载失败',
+                }));
+            };
+            bubble.appendChild(img);
+
+            // 检测状态：上传中 / 检测中 / 已完成 / 失败
+            const badge = document.createElement('div');
+            badge.className = 'detect-status';
+
+            if (meta.status === 'uploading') {
+                badge.innerHTML = '<span class="spinner"></span>' + escapeHtml(meta.note || '上传中…');
+                badge.classList.add('pending');
+
+                // 上传进度条
+                const bar = document.createElement('div');
+                bar.className = 'progress';
+                const fill = document.createElement('div');
+                fill.className = 'progress-fill';
+                fill.style.width = (meta.progress || 0) + '%';
+                bar.appendChild(fill);
+                badge.appendChild(bar);
+            } else if (meta.status === 'pending') {
+                badge.innerHTML = '<span class="spinner"></span>' + escapeHtml(meta.note || '正在检测…');
+                badge.classList.add('pending');
+            } else if (meta.status === 'done') {
+                badge.textContent = '已检测到 ' + (meta.count || 0) + ' 个目标';
+                badge.classList.add('done');
+            } else if (meta.status === 'failed') {
+                badge.textContent = meta.error ? ('发送失败：' + meta.error) : '检测失败';
+                badge.classList.add('failed');
+            } else {
+                badge.remove();
+                return;
+            }
+
+            bubble.appendChild(badge);
+        }
+
+        /**
+         * YOLO 结果消息：标注图 + 检测到的类别标签 + 明细。
+         * 标签数量可能很多（比如一张图里 50 个人），所以明细默认折叠起来，
+         * 只显示前若干个，避免气泡长得看不到底。
+         */
+        function appendYoloContent(bubble, msg) {
+            const data = parseContent(msg);
+
+            if (!data) {
+                const textEl = document.createElement('div');
+                textEl.className = 'text';
+                textEl.textContent = '（检测结果格式错误）';
+                bubble.appendChild(textEl);
+                return;
+            }
+
+            const summary = document.createElement('div');
+            summary.className = 'yolo-summary';
+            summary.textContent = data.error ? data.summary : ('检测结果：' + data.summary);
+            if (data.error) summary.classList.add('error');
+            bubble.appendChild(summary);
+
+            // 画好框的标注图
+            if (data.annotated) {
+                const img = document.createElement('img');
+                img.className = 'chat-image annotated';
+                img.src = imageUrl(data.annotated, 'annotated');
+                img.alt = 'YOLO 标注结果';
+                img.loading = 'lazy';
+                img.onerror = () => img.remove();
+                bubble.appendChild(img);
+            }
+
+            const detections = Array.isArray(data.detections) ? data.detections : [];
+
+            if (detections.length > 0) {
+                const tags = document.createElement('div');
+                tags.className = 'detect-tags';
+
+                // 只展示置信度最高的前 12 个标签，其余用「+N」概括
+                const shown = detections.slice(0, 12);
+
+                for (const det of shown) {
+                    const tag = document.createElement('span');
+                    tag.className = 'detect-tag';
+
+                    const cls = document.createElement('b');
+                    cls.textContent = det.class;
+
+                    const conf = document.createElement('i');
+                    conf.textContent = (Number(det.confidence) * 100).toFixed(0) + '%';
+
+                    tag.appendChild(cls);
+                    tag.appendChild(conf);
+                    tags.appendChild(tag);
+                }
+
+                if (detections.length > shown.length) {
+                    const more = document.createElement('span');
+                    more.className = 'detect-tag more';
+                    more.textContent = '+' + (detections.length - shown.length);
+                    tags.appendChild(more);
+                }
+
+                bubble.appendChild(tags);
+            }
+
+            if (data.truncated) {
+                const note = document.createElement('div');
+                note.className = 'detect-note';
+                note.textContent = `（目标过多，另有 ${data.truncated} 个未显示）`;
+                bubble.appendChild(note);
+            }
+        }
+
+        /** 重新渲染当前房间的全部消息 */
         function renderMessages() {
             list.innerHTML = '';
 
             const state = roomMap.get(currentRoom);
             if (!state) return;
 
-            for (const msg of state.messages) {
-                const li = document.createElement('li');
-                const isSelf = msg.nickname === nickname;
-                li.className = isSelf ? 'self' : 'other';
+            // 用 DocumentFragment 一次性插入，避免每条消息都触发一次重排
+            const fragment = document.createDocumentFragment();
 
-                const bubble = document.createElement('div');
-                bubble.className = 'bubble';
-                bubble.textContent = `${msg.nickname}：${msg.content}`;
-                li.appendChild(bubble);
-                list.appendChild(li);
+            for (const msg of state.messages) {
+                fragment.appendChild(buildMessageElement(msg));
             }
 
+            list.appendChild(fragment);
             list.scrollTop = list.scrollHeight;
         }
 
@@ -272,6 +579,14 @@
                 nameSpan.textContent = roomName;
                 item.appendChild(nameSpan);
 
+                // 掉线提示：连接断了要能一眼看出来
+                if (!state.connected) {
+                    const dot = document.createElement('span');
+                    dot.className = 'offline';
+                    dot.textContent = '断线';
+                    item.appendChild(dot);
+                }
+
                 if (state.unread > 0) {
                     const badge = document.createElement('span');
                     badge.className = 'badge';
@@ -289,9 +604,21 @@
             if (!currentRoom) return;
 
             const state = roomMap.get(currentRoom);
-            if (state && state.ws) {
-                state.ws.onclose = null;  // 阻止重连
-                state.ws.close();
+            if (state) {
+                if (state.retryTimer) clearTimeout(state.retryTimer);
+
+                if (state.ws) {
+                    state.ws.onclose = null;  // 阻止重连
+                    state.ws.close();
+                }
+
+                // 清掉这个房间残留的临时消息引用，防止内存泄漏
+                for (const temp of state.messages) {
+                    if (temp.tempId) {
+                        releaseTempUrl(temp);
+                        tempMessages.delete(temp.tempId);
+                    }
+                }
             }
             roomMap.delete(currentRoom);
 
@@ -308,6 +635,299 @@
                 renderRoomList();
             }
         }
+
+        // ============ 图片发送 ============
+
+        /** 把文件大小/类型显示到预览条上 */
+        function showPreview(file) {
+            pendingImage = file;
+
+            previewImg.src = URL.createObjectURL(file);
+            previewName.textContent = file.name || '粘贴的图片';
+            previewMeta.textContent = `${formatBytes(file.size)} · 发送后自动检测`;
+            previewBar.style.display = 'flex';
+        }
+
+        /** 清空预览，顺手释放 objectURL 避免内存泄漏 */
+        function clearPreview() {
+            if (previewImg.src && previewImg.src.startsWith('blob:')) {
+                URL.revokeObjectURL(previewImg.src);
+            }
+            previewImg.removeAttribute('src');
+            previewBar.style.display = 'none';
+            previewName.textContent = '';
+            previewMeta.textContent = '';
+            imageInput.value = '';
+            pendingImage = null;
+        }
+
+        /** 选图后先在前端做一遍校验，不合格就不用浪费一次上传 */
+        function validateImageFile(file) {
+            if (!file) return '没有选择文件';
+
+            const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+            if (!allowed.includes(file.type)) {
+                return '只支持 jpg / png / webp / gif / bmp 格式的图片';
+            }
+
+            if (file.size > MAX_IMAGE_BYTES) {
+                return `图片太大（${formatBytes(file.size)}），单张不能超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB`;
+            }
+
+            if (file.size === 0) {
+                return '这个文件是空的';
+            }
+
+            return null;
+        }
+
+        /**
+         * 往当前房间插一条「临时消息」，让用户马上看到发送中/检测中。
+         * 真正的消息会由服务器广播回来，届时按 tempId 顶替掉这一条。
+         */
+        function addTempMessage(roomName, tempId, content) {
+            const state = stateOf(roomName);
+            if (!state) return;
+
+            const temp = {
+                id: tempId,
+                tempId: tempId,
+                room: roomName,
+                nickname: nickname,
+                content: JSON.stringify(content),
+                type: 'image',
+                created_at: new Date().toISOString(),
+            };
+
+            tempMessages.set(tempId, temp);
+            state.messages.push(temp);
+            renderMessages();
+        }
+
+        /** 更新临时消息的内容（比如上传进度、失败原因） */
+        function updateTempMessage(tempId, patch) {
+            const temp = tempMessages.get(tempId);
+            if (!temp) return;
+
+            const meta = parseContent(temp) || {};
+            Object.assign(meta, patch);
+            temp.content = JSON.stringify(meta);
+            renderMessages();
+        }
+
+        /** 上传失败：把临时消息标成失败并说明原因 */
+        function failTempMessage(tempId, reason) {
+            updateTempMessage(tempId, { status: 'failed', error: reason });
+        }
+
+        /**
+         * 真正执行上传。
+         * 用 XMLHttpRequest 而不是 fetch，因为需要上传进度（fetch 拿不到）。
+         */
+        function doUpload(item) {
+            return new Promise((resolve, reject) => {
+                const { tempId, file, roomName } = item;
+
+                const xhr = new XMLHttpRequest();
+                const url = `${SERVER_ORIGIN}/upload?room=${encodeURIComponent(roomName)}&nickname=${encodeURIComponent(nickname)}`;
+
+                xhr.open('POST', url, true);
+                // 一定要显式设成图片类型，否则有些浏览器会按表单处理
+                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+
+                xhr.upload.onprogress = (e) => {
+                    if (!e.lengthComputable) return;
+                    const percent = Math.round((e.loaded / e.total) * 100);
+
+                    // 传完之后就进入「服务端检测」，进度条的文案要跟着换
+                    if (percent >= 100) {
+                        updateTempMessage(tempId, { status: 'pending', progress: 100, note: '正在检测…' });
+                    } else {
+                        updateTempMessage(tempId, { status: 'uploading', progress: percent, note: '上传中 ' + percent + '%' });
+                    }
+                };
+
+                xhr.onload = () => {
+                    let data = null;
+                    try {
+                        data = JSON.parse(xhr.responseText);
+                    } catch {
+                        data = null;
+                    }
+
+                    if (xhr.status >= 200 && xhr.status < 300 && data && data.ok) {
+                        // 服务器回执里带着正式消息：直接清掉临时消息，
+                        // WebSocket 广播可能比这个响应先到，所以要先判断一下
+                        const official = data.message;
+                        const state = stateOf(roomName);
+
+                        if (state && official && typeof official.id === 'number') {
+                            const alreadyArrived = state.messages.some((m) => m.id === official.id);
+
+                            if (!alreadyArrived) {
+                                // 广播还没到：先把临时的删掉、把正式的插进去，
+                                // 免得出现「图片显示两次」或者长时间空着
+                                const temp = tempMessages.get(tempId);
+                                if (temp) {
+                                    releaseTempUrl(temp);
+                                    const index = state.messages.indexOf(temp);
+                                    if (index >= 0) state.messages.splice(index, 1);
+                                }
+                                state.messages.push(official);
+                                if (official.id > state.lastId) state.lastId = official.id;
+                            }
+
+                            tempMessages.delete(tempId);
+                            renderMessages();
+                        }
+
+                        resolve({ ok: true, yoloReady: data.yolo });
+                    } else {
+                        const reason = (data && data.error) || ('上传失败（HTTP ' + xhr.status + '）');
+                        failTempMessage(tempId, reason);
+                        resolve({ ok: false, fatal: xhr.status >= 400 && xhr.status < 500, reason });
+                    }
+                };
+
+                xhr.onerror = () => {
+                    resolve({ ok: false, fatal: false, reason: '网络错误，无法连接服务器' });
+                };
+
+                xhr.ontimeout = () => {
+                    resolve({ ok: false, fatal: false, reason: '上传超时' });
+                };
+
+                updateTempMessage(tempId, { status: 'uploading', progress: 0, note: '准备上传…' });
+                xhr.send(file);
+            });
+        }
+
+        /** 依次处理上传队列 */
+        async function flushUploadQueue() {
+            if (uploading) return;
+
+            // 必须有一个已连接的房间才能上传
+            const state = currentRoom ? stateOf(currentRoom) : null;
+            if (!state || !state.connected) return;
+
+            uploading = true;
+
+            try {
+                while (uploadQueue.length > 0) {
+                    const item = uploadQueue[0];
+
+                    // 发送前再确认一次房间还在且连得上
+                    const itemState = stateOf(item.roomName);
+                    if (!itemState || !itemState.connected) {
+                        // 还是断的，先留着，等重新连上再说
+                        break;
+                    }
+
+                    const result = await doUpload(item);
+                    uploadQueue.shift();
+
+                    if (!result.ok) {
+                        if (result.fatal) {
+                            // 4xx 说明这张图本身有问题（格式/大小/房间名），重试也没用
+                            setStatus('图片发送失败：' + result.reason);
+                        } else {
+                            // 网络类错误：把消息留着，等下次连上时补发
+                            uploadQueue.unshift(item);
+                            setStatus('图片没发出去，恢复连接后会自动重发');
+                            break;
+                        }
+                    }
+                }
+            } finally {
+                uploading = false;
+            }
+        }
+
+        /** 选好图片后点发送/回车：建立临时消息并入队 */
+        function sendPendingImage() {
+            if (!pendingImage) return;
+
+            if (!currentRoom) {
+                alert('请先加入一个房间');
+                return;
+            }
+
+            const state = stateOf(currentRoom);
+            if (!state) {
+                alert('请先加入一个房间');
+                return;
+            }
+
+            const file = pendingImage;
+            clearPreview();
+
+            const tempId = 'temp-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+
+            // 临时消息先用本地 objectURL 显示，用户立刻能看到图
+            const localUrl = URL.createObjectURL(file);
+
+            addTempMessage(currentRoom, tempId, {
+                url: localUrl,
+                local: true,
+                name: file.name,
+                size: file.size,
+                status: 'uploading',
+                progress: 0,
+                note: '准备上传…',
+            });
+
+            uploadQueue.push({ tempId, file, roomName: currentRoom });
+
+            if (state.connected) {
+                flushUploadQueue();
+            } else {
+                updateTempMessage(tempId, { note: '等待重新连接…' });
+                setStatus('当前离线，图片会在恢复连接后自动发送');
+            }
+        }
+
+        // ============ YOLO 服务状态 ============
+
+        async function refreshYoloStatus() {
+            try {
+                const resp = await fetch(`${SERVER_ORIGIN}/yolo-status`);
+                const info = await resp.json();
+
+                if (info.ready) {
+                    yoloStatusEl.textContent = 'YOLO：已就绪';
+                    yoloStatusEl.className = 'ok';
+                } else if (info.status === 'starting') {
+                    yoloStatusEl.textContent = 'YOLO：模型加载中…';
+                    yoloStatusEl.className = 'loading';
+                } else {
+                    yoloStatusEl.textContent = 'YOLO：不可用（图片仍可发送）';
+                    yoloStatusEl.className = 'bad';
+                }
+            } catch {
+                yoloStatusEl.textContent = '';
+                yoloStatusEl.className = '';
+            }
+        }
+
+        // 服务刚启动时模型可能还在加载，多问几次直到就绪
+        let yoloPollTimer = null;
+
+        function pollYoloUntilReady() {
+            if (yoloPollTimer) clearInterval(yoloPollTimer);
+
+            let tries = 0;
+            yoloPollTimer = setInterval(async () => {
+                tries += 1;
+                await refreshYoloStatus();
+
+                if (yoloStatusEl.className === 'ok' || tries >= 40) {
+                    clearInterval(yoloPollTimer);
+                    yoloPollTimer = null;
+                }
+            }, 3000);
+        }
+
+        // ============ 事件绑定 ============
 
         // 点击按钮加入房间
         joinBtn.addEventListener('click', joinRoom);
@@ -329,9 +949,16 @@
         // 给输入框加键盘事件
         input.addEventListener('keydown', (e) => {
             if (e.key !== 'Enter') return;
+
+            // 有选好的图片时，回车优先发图片（更符合直觉）
+            if (pendingImage) {
+                sendPendingImage();
+                return;
+            }
+
             if (input.value.trim() === '') return;
 
-            const state = roomMap.get(currentRoom);
+            const state = stateOf(currentRoom);
             if (!state || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
                 alert('当前房间未连接');
                 return;
@@ -340,6 +967,95 @@
             state.ws.send(JSON.stringify({ content: input.value }));
             input.value = '';
         });
+
+        // 点击图片按钮 -> 打开文件选择框
+        imageBtn.addEventListener('click', () => {
+            if (!currentRoom) {
+                alert('请先加入一个房间');
+                return;
+            }
+            imageInput.click();
+        });
+
+        // 选好文件
+        imageInput.addEventListener('change', () => {
+            const file = imageInput.files && imageInput.files[0];
+            if (!file) return;
+
+            const error = validateImageFile(file);
+            if (error) {
+                alert(error);
+                imageInput.value = '';
+                return;
+            }
+
+            showPreview(file);
+        });
+
+        // 取消预览
+        previewCancel.addEventListener('click', clearPreview);
+
+        // 支持直接 Ctrl+V 粘贴图片，比找文件快
+        document.addEventListener('paste', (e) => {
+            if (!currentRoom) return;
+
+            const items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+
+            for (const item of items) {
+                if (item.type && item.type.startsWith('image/')) {
+                    const file = item.getAsFile();
+                    if (!file) continue;
+
+                    const error = validateImageFile(file);
+                    if (error) {
+                        alert(error);
+                        return;
+                    }
+
+                    showPreview(file);
+                    e.preventDefault();
+                    return;
+                }
+            }
+        });
+
+        // 也支持把图片直接拖进聊天区域
+        const chatArea = document.getElementById('chatArea');
+
+        chatArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            chatArea.classList.add('dragging');
+        });
+
+        chatArea.addEventListener('dragleave', () => {
+            chatArea.classList.remove('dragging');
+        });
+
+        chatArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            chatArea.classList.remove('dragging');
+
+            if (!currentRoom) {
+                alert('请先加入一个房间');
+                return;
+            }
+
+            const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if (!file) return;
+
+            const error = validateImageFile(file);
+            if (error) {
+                alert(error);
+                return;
+            }
+
+            showPreview(file);
+        });
+
+        // 页面开始就查一次 YOLO 状态
+        refreshYoloStatus();
+        pollYoloUntilReady();
     </script>
 </body>
 </html>

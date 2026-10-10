@@ -203,3 +203,280 @@ body {
     min-width: 18px;
     text-align: center;
 }
+
+/* ============================================================
+   以下是为了「发图 + 自动 YOLO 检测」新增的样式
+   ============================================================ */
+
+/* ---------- 左侧栏：YOLO 服务状态 ---------- */
+
+#yoloStatus {
+    margin: 0;
+    font-size: 12px;
+    color: #888;
+}
+
+#yoloStatus.ok {
+    color: #2e9e4f;
+}
+
+#yoloStatus.loading {
+    color: #d08b00;
+}
+
+#yoloStatus.bad {
+    color: #d9534f;
+}
+
+/* 房间列表里「断线」的小标记 */
+.room-item .offline {
+    background: #f0ad4e;
+    color: #fff;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+}
+
+/* ---------- 底部输入区 ---------- */
+
+/* 发图按钮：做成一个方块图标按钮 */
+#imageBtn {
+    flex: 0 0 auto;
+    width: 36px;
+    margin-right: 8px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+}
+
+#imageBtn:hover {
+    background: #e9f2fd;
+    border-color: #4a90e2;
+}
+
+/* 拖拽图片到聊天区时的提示 */
+#chatArea.dragging {
+    outline: 2px dashed #4a90e2;
+    outline-offset: -8px;
+    background: #eaf3fd;
+}
+
+/* ---------- 待发送图片预览条 ---------- */
+
+#previewBar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: #fffbe6;
+    border-top: 1px solid #ffe58f;
+}
+
+#previewImg {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    background: #fff;
+}
+
+#previewInfo {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    font-size: 12px;
+    color: #666;
+}
+
+#previewName {
+    color: #333;
+    /* 文件名太长时用省略号，不要撑破布局 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+
+/* 取消按钮 */
+#previewCancel {
+    margin-left: auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 15px;
+    color: #999;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+#previewCancel:hover {
+    background: #ffe58f;
+    color: #333;
+}
+
+/* ---------- 消息里的图片 ---------- */
+
+/* 图片消息的气泡要宽一点，否则图片被挤得很小 */
+#messages li .bubble:has(.chat-image) {
+    max-width: min(360px, 70%);
+}
+
+.chat-image {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: 6px;
+    background: #fff;
+    cursor: zoom-in;
+}
+
+/* 标注图（画了检测框的）给个边框，和原图区分开 */
+.chat-image.annotated {
+    border: 2px solid #4a90e2;
+    cursor: zoom-in;
+}
+
+.image-error {
+    color: #d9534f;
+    font-style: italic;
+}
+
+/* 发送者昵称：小号灰字 */
+.bubble .sender {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 4px;
+}
+
+/* 自己的气泡里昵称颜色深一点，和绿底搭配 */
+#messages li.self .bubble .sender {
+    color: #4a7a35;
+}
+
+.bubble .text {
+    white-space: pre-wrap;
+}
+
+/* ---------- 检测状态徽标 ---------- */
+
+.detect-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 12px;
+}
+
+.detect-status.pending {
+    color: #d08b00;
+}
+
+.detect-status.done {
+    color: #2e9e4f;
+}
+
+.detect-status.failed {
+    color: #d9534f;
+}
+
+/* 转圈小动画：表示正在上传/检测 */
+.spinner {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border: 2px solid rgba(0, 0, 0, 0.15);
+    border-top-color: #d08b00;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex: 0 0 auto;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* 上传进度条 */
+.progress {
+    flex: 1 1 100%;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0;
+    background: #4a90e2;
+    border-radius: 2px;
+    transition: width 0.15s linear;
+}
+
+/* ---------- YOLO 结果消息 ---------- */
+
+/* YOLO 的气泡用淡蓝底 + 蓝边，一眼能看出是自动检测结果 */
+#messages li.yolo .bubble {
+    background: #eef5ff;
+    border: 1px solid #cfe2ff;
+    color: #1a1a1a;
+}
+
+.yolo-summary {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2b5fa8;
+    margin-bottom: 6px;
+}
+
+.yolo-summary.error {
+    color: #d9534f;
+}
+
+/* 检测到的类别标签 */
+.detect-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.detect-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: #fff;
+    border: 1px solid #cfe2ff;
+    border-radius: 12px;
+    font-size: 12px;
+    color: #2b5fa8;
+    white-space: nowrap;
+}
+
+/* 置信度：斜体小字，弱化处理 */
+.detect-tag i {
+    font-style: normal;
+    font-size: 11px;
+    color: #7c9cc4;
+}
+
+.detect-tag.more {
+    background: #f0f4fa;
+    color: #7c9cc4;
+    border-style: dashed;
+}
+
+.detect-note {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #999;
+}

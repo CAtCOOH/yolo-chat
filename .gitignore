@@ -1,0 +1,49 @@
+# ============================================================
+#  yolo-chat 的忽略规则（对整个仓库生效）
+#  两个子项目各自保留了原来的 .gitignore，这里做统一补充
+# ============================================================
+
+# ---------- Node（chat/） ----------
+node_modules/
+
+# SQLite 聊天记录：属于本机运行时数据，不该进仓库
+chat.db
+chat.db-wal
+chat.db-shm
+
+# 用户上传的图片和 YOLO 生成的标注图（运行时产物）
+uploads/
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# ---------- YOLO 训练产物 ----------
+# datasets/ 是下载来的数据集，runs/ 是训练输出，*.pt 是模型权重。
+# 这些都能重新生成，而且单个就有好几 MB，所以不入库。
+#
+# 注意：训练产出的最佳权重 train/runs/detect/train-2/weights/best.pt
+# 正好被 runs/ 规则覆盖，这是有意为之。也就是说刚克隆下来时
+# 自动检测是没模型可用的，需要先自己跑一遍训练 —— 原因见根目录 README。
+datasets/
+runs/
+weights/
+*.pt
+*.pth
+*.onnx
+*.cache
+
+# ---------- 诊断日志（chat/diagnose.bat 生成） ----------
+diagnose.log
+backend_test.log
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

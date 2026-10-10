@@ -4,6 +4,9 @@ chat.db
 chat.db-wal
 chat.db-shm
 
+# 用户上传的图片和 YOLO 生成的标注图（运行时产物，不入库）
+uploads/
+
 # 环境变量
 .env
 

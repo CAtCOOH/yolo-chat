@@ -1,4 +1,9 @@
 @echo off
+rem Keep this file pure ASCII: cmd.exe parses .bat with the OEM code page,
+rem so UTF-8 Chinese here would corrupt the script. See start_ai.bat.
+rem
+rem Delays use "ping" instead of "timeout": timeout aborts with
+rem "input redirection is not supported" when stdin is not a console.
 cd /d %~dp0
 
 echo Current dir: %cd%
@@ -22,7 +27,7 @@ if errorlevel 1 goto no_py
 
 echo Starting frontend...
 start "frontend" cmd /k py -m http.server 8080
-timeout /t 2 /nobreak >nul
+ping -n 3 127.0.0.1 >nul
 start "" http://localhost:8080/index.html
 goto done
 
@@ -38,7 +43,7 @@ exit /b 1
 
 :no_py
 echo [INFO] py not found. Opening index.html directly.
-timeout /t 2 /nobreak >nul
+ping -n 3 127.0.0.1 >nul
 start "" index.html
 goto done
 

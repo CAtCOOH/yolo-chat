@@ -1,0 +1,23 @@
+# 统一换行符，避免 Windows / macOS / Linux 之间来回切换时
+# 每个文件都显示成「整个文件被改写」，diff 完全没法看。
+# 仓库内部统一存 LF，检出时按平台自动处理。
+* text=auto eol=lf
+
+# 明确标记为二进制，禁止任何换行符转换和 diff 文本化
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.bmp binary
+*.ico binary
+*.pt binary
+*.pth binary
+*.onnx binary
+*.cache binary
+*.db binary
+
+# 压缩包
+*.zip binary
+*.7z binary
+*.rar binary
