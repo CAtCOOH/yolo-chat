@@ -55,13 +55,11 @@ results = model.train(data="coco8.yaml", epochs=3, imgsz=640)
   3 个 epoch 在 8 张图上训练出来的模型精度有限，只能识别少数目标 ——
   要真正能用，应该换成自己的数据集并把 epoch 加大到几十上百。
 
-训练产物会写到 `runs/detect/train/`。
-如果这个目录已经存在，ultralytics 会自动改名成 `train-2`、`train-3`……
+训练产物会写到 `runs/detect/train/`（`train.py` 已固定 `name="train"`，每次训练都会覆盖该目录，
+产物路径稳定，下游脚本无需改动）。
 
-> **重要：请确认权重落在 `runs/detect/train-2/weights/best.pt`。**
+> **重要：权重预期落在 `runs/detect/train/weights/best.pt`。**
 > `predict.py`、`webcam.py` 和聊天室的自动检测都按这个路径找模型。
-> 如果你的训练结果是 `train/` 或 `train-3/`，把那些脚本里的路径改一下，
-> 或者用环境变量指定（见下）。
 
 ## 推理
 
@@ -83,7 +81,7 @@ python webcam.py
 
 聊天室的 `chat/yolo_worker.py` 按下面的顺序寻找权重：
 
-1. `../train/runs/detect/train-2/weights/best.pt` ← **就是这里**
+1. `../train/runs/detect/train/weights/best.pt` ← **就是这里**
 2. `train/runs/detect/train-2/weights/best.pt`（训练作业被拷进 chat 目录时）
 3. `weights/yolo26n.pt`、`yolo11n.pt`（官方预训练权重兜底）
 

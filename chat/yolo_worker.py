@@ -58,7 +58,7 @@ def resolve_default_model():
     a = os.path.dirname(os.path.abspath(__file__))
     b = os.path.dirname(a)
 
-    rel = os.path.join("runs", "detect", "train-2", "weights", "best.pt")
+    rel = os.path.join("runs", "detect", "train", "weights", "best.pt")
 
     candidates = [
         # 训练作业作为同级目录叫 train/（整合后的仓库布局）

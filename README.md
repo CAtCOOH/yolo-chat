@@ -1,8 +1,6 @@
 # yolo-chat
 
-把两个作业整合成一个项目：**在多人聊天室里发一张图片，系统自动调用 YOLO 做目标检测，把画好检测框的图片和识别结果发回聊天室。**
-
-一个仓库里包含两部分：
+含两部分：
 
 | 目录 | 内容 | 技术栈 |
 | --- | --- | --- |
@@ -41,17 +39,6 @@ yolo-chat/
     └── README.md              <- 训练步骤与数据集说明
 ```
 
-运行时才会生成的目录（已被忽略，不会进仓库）：
-
-```
-chat/node_modules/             npm 依赖
-chat/uploads/original/         用户上传的原图
-chat/uploads/annotated/        YOLO 画好框的标注图
-chat/chat.db                   聊天记录（SQLite）
-train/datasets/                下载的数据集
-train/runs/                    训练输出，最佳权重在 runs/detect/train-2/weights/best.pt
-```
-
 ---
 
 ## 快速开始
@@ -87,7 +74,6 @@ python train.py
 
 > 为什么仓库不带权重？见下面的[设计取舍](#设计取舍)。
 
-已经有权重的话也可以直接指定，不必放进仓库：
 
 ```bat
 set YOLO_MODEL=D:\somewhere\best.pt
